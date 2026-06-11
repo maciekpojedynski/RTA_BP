@@ -73,8 +73,8 @@ services:
 
   stream-processor:
     build:
-      context: ../stream_processing
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: stream_processing/Dockerfile
     container_name: rta-stream-processor
     depends_on:
       kafka:
