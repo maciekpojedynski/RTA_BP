@@ -84,3 +84,25 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     restart: on-failure
+
+  postgres:
+    image: postgres:16
+    container_name: rta-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: rta
+      POSTGRES_USER: rta_user
+      POSTGRES_PASSWORD: rta_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rta_user -d rta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
