@@ -3,17 +3,17 @@ import os
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import TopicAlreadyExistsError
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Konfiguracja Kafki i topiców
-# ─────────────────────────────────────────────────────────────────────────────
-
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092")
+
+BASE_DIR = Path(__file__).resolve().parent
+SEED_OUTPUT_FILE = BASE_DIR.parent / "infrastructure" / "database" / "init" / "seed-data.json"
 
 TOPIC_WEJSCIOWY = "transactions"
 TOPIC_PRZETWORZONE = "processed-transactions"
@@ -25,27 +25,21 @@ TOPICI_WYJSCIOWE = [TOPIC_PRZETWORZONE, TOPIC_ALERTY, TOPIC_STATYSTYKI]
 OKNO_STATYSTYK_SEKUNDY = 60
 CO_ILE_WYSYLAC_STATYSTYKI = 10
 
-POLSKIE_MIASTA = {"Warsaw", "Krakow", "Gdansk"}
-ZAGRANICZNE_MIASTA = {"Berlin", "London", "Lagos"}
+CITIES = ["Warsaw", "Krakow", "Gdansk", "Wroclaw", "Berlin", "London"]
 
+POLSKIE_MIASTA = {"Warsaw", "Krakow", "Gdansk", "Wroclaw"}
+ZAGRANICZNE_MIASTA = {"Berlin", "London"}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Funkcje pomocnicze
-# ─────────────────────────────────────────────────────────────────────────────
 
 def zamien_date_na_datetime(timestamp):
-    """Zamienia timestamp z wiadomości na obiekt datetime w UTC."""
     timestamp = timestamp.replace("Z", "+00:00")
     data = datetime.fromisoformat(timestamp)
-
     if data.tzinfo is None:
         data = data.replace(tzinfo=timezone.utc)
-
     return data.astimezone(timezone.utc)
 
 
 def utworz_topici_jesli_nie_istnieja():
-    """Tworzy topici wyjściowe, jeśli jeszcze nie istnieją."""
     admin = KafkaAdminClient(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         client_id="stream-processor-admin",
@@ -75,7 +69,6 @@ def utworz_topici_jesli_nie_istnieja():
 
 
 def policz_poziom_ryzyka(wynik):
-    """Zamienia punktowy wynik ryzyka na poziom opisowy."""
     if wynik >= 75:
         return "critical"
     if wynik >= 50:
@@ -85,18 +78,7 @@ def policz_poziom_ryzyka(wynik):
     return "low"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Logika biznesowa: wykrywanie podejrzanych transakcji
-# ─────────────────────────────────────────────────────────────────────────────
-
 def policz_ryzyko(transakcja, historia_uzytkownikow):
-    """
-    Liczy ryzyko transakcji na podstawie prostych reguł biznesowych.
-
-    Zwraca:
-    - risk_score, czyli wynik od 0 do 100,
-    - risk_flags, czyli listę powodów, dla których transakcja wygląda podejrzanie.
-    """
     user_id = transakcja["user_id"]
     kwota = float(transakcja["amount"])
     kategoria = transakcja["merchant_category"]
@@ -109,27 +91,22 @@ def policz_ryzyko(transakcja, historia_uzytkownikow):
     wynik = 0
     powody = []
 
-    # Reguła 1: bardzo mała płatność online może oznaczać testowanie karty.
     if kategoria == "online_shop" and kwota <= 5:
         wynik += 35
         powody.append("very_low_online_transaction")
 
-    # Reguła 2: duża transakcja w elektronice lub paliwie jest bardziej ryzykowna.
     if kwota >= 3000 and kategoria in {"electronics", "fuel"}:
         wynik += 45
         powody.append("high_value_sensitive_category")
 
-    # Reguła 3: wypłata z bankomatu za granicą na wysoką kwotę.
     if miasto in ZAGRANICZNE_MIASTA and kategoria == "atm" and kwota >= 1000:
         wynik += 50
         powody.append("foreign_atm_withdrawal")
 
-    # Reguła 4: wiele transakcji jednego użytkownika w krótkim czasie.
     if len(poprzednie_transakcje) >= 5:
         wynik += 20
         powody.append("high_user_velocity_5min")
 
-    # Reguła 5: kilka bardzo małych płatności online pod rząd.
     male_platnosci_online = 0
     for poprzednia in poprzednie_transakcje:
         if poprzednia["merchant_category"] == "online_shop" and float(poprzednia["amount"]) <= 5:
@@ -139,7 +116,6 @@ def policz_ryzyko(transakcja, historia_uzytkownikow):
         wynik += 25
         powody.append("repeated_card_testing_pattern")
 
-    # Reguła 6: szybka zmiana lokalizacji z Polski na zagranicę.
     ostatnie_miasto = historia["ostatnie_miasto"]
     ostatni_czas = historia["ostatni_czas"]
 
@@ -149,8 +125,6 @@ def policz_ryzyko(transakcja, historia_uzytkownikow):
             wynik += 30
             powody.append("impossible_travel_pattern")
 
-    # To pole pochodzi z generatora danych. Nie traktujemy go jako reguły,
-    # tylko zostawiamy jako informację do późniejszej oceny jakości.
     if transakcja.get("is_fraud") is True:
         powody.append("simulated_ground_truth_fraud")
 
@@ -158,7 +132,6 @@ def policz_ryzyko(transakcja, historia_uzytkownikow):
 
 
 def usun_stare_dane(historia_uzytkownikow, okno_globalne, aktualny_czas):
-    """Czyści stare dane z pamięci, żeby program nie trzymał wszystkiego bez końca."""
     granica_okna = aktualny_czas.timestamp() - OKNO_STATYSTYK_SEKUNDY
 
     while okno_globalne and okno_globalne[0]["event_ts"].timestamp() < granica_okna:
@@ -178,7 +151,6 @@ def usun_stare_dane(historia_uzytkownikow, okno_globalne, aktualny_czas):
 
 
 def przetworz_transakcje(transakcja, historia_uzytkownikow, okno_globalne):
-    """Dodaje do transakcji wynik ryzyka i aktualizuje krótką historię użytkownika."""
     czas_transakcji = zamien_date_na_datetime(transakcja["timestamp"])
     usun_stare_dane(historia_uzytkownikow, okno_globalne, czas_transakcji)
 
@@ -193,7 +165,6 @@ def przetworz_transakcje(transakcja, historia_uzytkownikow, okno_globalne):
     przetworzona["requires_manual_review"] = poziom_ryzyka in {"high", "critical"}
     przetworzona["processor_version"] = "2.0-simple-pl"
 
-    # Aktualizacja historii użytkownika.
     user_id = transakcja["user_id"]
     historia = historia_uzytkownikow[user_id]
 
@@ -211,12 +182,7 @@ def przetworz_transakcje(transakcja, historia_uzytkownikow, okno_globalne):
     return przetworzona
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Statystyki okienne
-# ─────────────────────────────────────────────────────────────────────────────
-
 def zbuduj_statystyki_okienne(okno_globalne):
-    """Buduje statystyki z ostatnich 60 sekund."""
     transakcje = list(okno_globalne)
     liczba_transakcji = len(transakcje)
     suma_kwot = round(sum(float(t["amount"]) for t in transakcje), 2)
@@ -229,10 +195,8 @@ def zbuduj_statystyki_okienne(okno_globalne):
     for transakcja in transakcje:
         if transakcja["risk_level"] in {"high", "critical"}:
             liczba_alertow += 1
-
         if transakcja.get("is_fraud") is True:
             liczba_fraudow_symulowanych += 1
-
         po_miastach[transakcja["city"]] += 1
         po_kategoriach[transakcja["merchant_category"]] += 1
 
@@ -257,29 +221,26 @@ def zbuduj_statystyki_okienne(okno_globalne):
     }
 
 
-def wyslij_statystyki_jesli_czas(producer, okno_globalne, ostatnia_wysylka):
-    """Wysyła statystyki okienne co kilka sekund."""
-    teraz = time.time()
-
-    if teraz - ostatnia_wysylka < CO_ILE_WYSYLAC_STATYSTYKI:
-        return ostatnia_wysylka
-
-    statystyki = zbuduj_statystyki_okienne(okno_globalne)
-
-    producer.send(
-        TOPIC_STATYSTYKI,
-        key="global",
-        value=statystyki,
-    )
-    producer.flush()
-
-    print("Wysłano statystyki okienne:", statystyki)
-    return teraz
+def serializuj_datetime(obj):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, deque):
+        return list(obj)
+    raise TypeError(f"Nieobsługiwany typ: {type(obj)}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Główna pętla programu
-# ─────────────────────────────────────────────────────────────────────────────
+def export_seed_data(processed_transactions, fraud_alerts, transaction_window_stats):
+    seed_data = {
+        "processed_transactions": processed_transactions,
+        "fraud_alerts": fraud_alerts,
+        "transaction_window_stats": transaction_window_stats,
+    }
+
+    with open(SEED_OUTPUT_FILE, "w", encoding="utf-8") as f:
+        json.dump(seed_data, f, ensure_ascii=False, indent=2, default=serializuj_datetime)
+
+    print(f"Zapisano seed do pliku: {SEED_OUTPUT_FILE}")
+
 
 def main():
     print("Uruchamianie stream processora...")
@@ -303,96 +264,112 @@ def main():
         key_serializer=lambda x: x.encode("utf-8") if x else None,
     )
 
-    # Historia użytkowników z ostatnich kilku minut.
     historia_uzytkownikow = defaultdict(lambda: {
         "transakcje": deque(),
         "ostatnie_miasto": None,
         "ostatni_czas": None,
     })
 
-    # Globalne okno transakcji z ostatniej minuty.
     okno_globalne = deque()
     ostatnia_wysylka_statystyk = time.time()
+
+    processed_transactions_export = []
+    fraud_alerts_export = []
+    transaction_window_stats_export = []
 
     print("Processor działa.")
     print(f"Czytam z topicu: {TOPIC_WEJSCIOWY}")
     print(f"Zapisuję do topiców: {TOPICI_WYJSCIOWE}")
 
-    while True:
-        paczka_wiadomosci = consumer.poll(timeout_ms=1000, max_records=100)
+    try:
+        while True:
+            paczka_wiadomosci = consumer.poll(timeout_ms=1000, max_records=100)
 
-        if not paczka_wiadomosci:
-            ostatnia_wysylka_statystyk = wyslij_statystyki_jesli_czas(
-                producer,
-                okno_globalne,
-                ostatnia_wysylka_statystyk,
-            )
-            continue
+            if not paczka_wiadomosci:
+                teraz = time.time()
+                if teraz - ostatnia_wysylka_statystyk >= CO_ILE_WYSYLAC_STATYSTYKI:
+                    statystyki = zbuduj_statystyki_okienne(okno_globalne)
+                    transaction_window_stats_export.append(statystyki)
+                    producer.send(TOPIC_STATYSTYKI, key="global", value=statystyki)
+                    producer.flush()
+                    print("Wysłano statystyki okienne:", statystyki)
+                    ostatnia_wysylka_statystyk = teraz
+                continue
 
-        for _partycja, wiadomosci in paczka_wiadomosci.items():
-            for wiadomosc in wiadomosci:
-                transakcja = wiadomosc.value
+            for _partycja, wiadomosci in paczka_wiadomosci.items():
+                for wiadomosc in wiadomosci:
+                    transakcja = wiadomosc.value
 
-                try:
-                    przetworzona = przetworz_transakcje(
-                        transakcja,
-                        historia_uzytkownikow,
-                        okno_globalne,
-                    )
+                    try:
+                        przetworzona = przetworz_transakcje(
+                            transakcja,
+                            historia_uzytkownikow,
+                            okno_globalne,
+                        )
 
-                    user_id = przetworzona["user_id"]
-
-                    # 1. Zapis każdej przetworzonej transakcji do Kafki.
-                    producer.send(
-                        TOPIC_PRZETWORZONE,
-                        key=user_id,
-                        value=przetworzona,
-                    )
-
-                    # 2. Jeśli transakcja jest ryzykowna, tworzymy alert.
-                    if przetworzona["requires_manual_review"]:
-                        alert = {
-                            "alert_id": "ALERT-" + przetworzona["transaction_id"],
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                            "transaction_id": przetworzona["transaction_id"],
-                            "user_id": przetworzona["user_id"],
-                            "amount": przetworzona["amount"],
-                            "city": przetworzona["city"],
-                            "merchant_category": przetworzona["merchant_category"],
-                            "risk_score": przetworzona["risk_score"],
-                            "risk_level": przetworzona["risk_level"],
-                            "risk_flags": przetworzona["risk_flags"],
-                            "recommended_action": "manual_review",
-                        }
-
-                        if przetworzona["risk_level"] == "critical":
-                            alert["recommended_action"] = "block_and_manual_review"
+                        processed_transactions_export.append(przetworzona)
+                        user_id = przetworzona["user_id"]
 
                         producer.send(
-                            TOPIC_ALERTY,
+                            TOPIC_PRZETWORZONE,
                             key=user_id,
-                            value=alert,
+                            value=przetworzona,
                         )
 
-                        print("ALERT:", alert)
-                    else:
-                        print(
-                            "OK:",
-                            przetworzona["transaction_id"],
-                            "user=", przetworzona["user_id"],
-                            "risk=", przetworzona["risk_score"],
-                        )
+                        if przetworzona["requires_manual_review"]:
+                            alert = {
+                                "alert_id": "ALERT-" + przetworzona["transaction_id"],
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "transaction_id": przetworzona["transaction_id"],
+                                "user_id": przetworzona["user_id"],
+                                "amount": przetworzona["amount"],
+                                "city": przetworzona["city"],
+                                "merchant_category": przetworzona["merchant_category"],
+                                "risk_score": przetworzona["risk_score"],
+                                "risk_level": przetworzona["risk_level"],
+                                "risk_flags": przetworzona["risk_flags"],
+                                "recommended_action": "manual_review",
+                            }
 
-                except Exception as blad:
-                    print("Błąd przetwarzania wiadomości:", blad)
-                    print("Wiadomość:", transakcja)
+                            if przetworzona["risk_level"] == "critical":
+                                alert["recommended_action"] = "block_and_manual_review"
 
-        producer.flush()
-        ostatnia_wysylka_statystyk = wyslij_statystyki_jesli_czas(
-            producer,
-            okno_globalne,
-            ostatnia_wysylka_statystyk,
-        )
+                            fraud_alerts_export.append(alert)
+
+                            producer.send(
+                                TOPIC_ALERTY,
+                                key=user_id,
+                                value=alert,
+                            )
+
+                            print("ALERT:", alert)
+                        else:
+                            print(
+                                "OK:",
+                                przetworzona["transaction_id"],
+                                "user=", przetworzona["user_id"],
+                                "risk=", przetworzona["risk_score"],
+                            )
+
+                    except Exception as blad:
+                        print("Błąd przetwarzania wiadomości:", blad)
+                        print("Wiadomość:", transakcja)
+
+            producer.flush()
+
+    except KeyboardInterrupt:
+        print("Przerywam, zapisuję seed...")
+
+    finally:
+        try:
+            export_seed_data(
+                processed_transactions_export,
+                fraud_alerts_export,
+                transaction_window_stats_export,
+            )
+        finally:
+            consumer.close()
+            producer.close()
 
 
 if __name__ == "__main__":
