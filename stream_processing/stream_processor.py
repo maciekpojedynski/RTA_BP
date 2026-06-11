@@ -31,8 +31,8 @@ POLSKIE_MIASTA    = {"Warsaw", "Krakow", "Gdansk"}
 ZAGRANICZNE_MIASTA = {"Berlin", "London", "Lagos"}
 
 # Ścieżki do plików modelu ML (od Osoby 5)
-ML_MODEL_PATH    = os.getenv("ML_MODEL_PATH",    "../ML/xgboost_fraud_model_tuned.json")
-ML_FEATURES_PATH = os.getenv("ML_FEATURES_PATH", "../ML/expected_features.json")
+ML_MODEL_PATH    = os.getenv("ML_MODEL_PATH",    "ML/xgboost_fraud_model_tuned.json")
+ML_FEATURES_PATH = os.getenv("ML_FEATURES_PATH", "ML/expected_features.json")
 
 # Próg powyżej którego model ML uznaje transakcję za podejrzaną
 ML_PROG_ALERTU = 0.7
