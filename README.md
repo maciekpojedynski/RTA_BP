@@ -117,3 +117,74 @@ Skrypt `stream_processing/stream_processor.py` czyta transakcje z topicu `transa
 pip install -r requirements.txt
 python stream_processing/stream_processor.py
 ```
+## PostgreSQL lokalnie
+
+### Uruchomienie bazy
+1. Zainstaluj Docker i Docker Compose.
+2. Wejdź do katalogu z plikiem `docker-compose.yml`.
+3. Uruchom bazę:
+
+```bash
+docker compose up -d
+```
+
+### Połączenie z bazą
+Aby połączyć się z lokalnym PostgreSQL, użyj `psql`:
+
+```bash
+psql -h localhost -p 5432 -U rta_user -d rta
+```
+
+Dane logowania:
+- user: `rta_user`
+- password: `rta_password`
+- database: `rta`
+
+### Nawigacja po bazie
+Po zalogowaniu do `psql` przydatne są komendy:
+
+```sql
+\dt
+```
+
+Wyświetla listę tabel.
+
+```sql
+SELECT COUNT(*) FROM processed_transactions;
+SELECT COUNT(*) FROM fraud_alerts;
+SELECT COUNT(*) FROM transaction_window_stats;
+```
+
+Pokazuje liczbę rekordów w tabelach.
+
+```sql
+SELECT * FROM processed_transactions LIMIT 5;
+```
+
+Wyświetla pierwsze rekordy z tabeli.
+
+```sql
+\q
+```
+
+Kończy sesję `psql`.
+
+## Ładowanie danych do bazy
+
+Skrypt `init/load-seed.py` wczytuje plik `database/init/seed-data.json` i zapisuje dane do bazy PostgreSQL w tabelach:
+- `processed_transactions`
+- `fraud_alerts`
+- `transaction_window_stats`
+
+Skrypt należy uruchomić po utworzeniu tabel oraz po wygenerowaniu pliku seed przez `stream_processing/stream_processor.py`.
+
+### Zalecana kolejność uruchamiania
+1. Uruchom infrastrukturę Kafka i PostgreSQL.
+2. Uruchom `stream_processing/stream_processor.py`, aby wygenerował dane i zapisał `seed-data.json`.
+3. Uruchom `init/load-seed.py`, aby załadować dane z JSON do bazy.
+
+### Uruchomienie
+```bash
+python stream_processing/stream_processor.py
+python init/load-seed.py
+```
