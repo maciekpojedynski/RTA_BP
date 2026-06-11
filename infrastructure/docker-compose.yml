@@ -71,7 +71,7 @@ services:
       echo 'Topics created.';"
     restart: "no"
 
-    stream-processor:
+  stream-processor:
     build:
       context: ../stream_processing
       dockerfile: Dockerfile
