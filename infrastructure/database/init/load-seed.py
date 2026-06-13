@@ -36,6 +36,9 @@ def prepare_processed_transactions(rows: list[dict]) -> list[tuple]:
             row["city"],
             row["is_fraud"],
             row["risk_score"],
+            # Dodane z wersji 3.0 ML: pobieramy bezpiecznie przez .get()
+            row.get("risk_score_rules"),
+            row.get("risk_score_ml"),
             row["risk_level"],
             row["requires_manual_review"],
             row["processor_version"],
@@ -56,8 +59,12 @@ def prepare_fraud_alerts(rows: list[dict]) -> list[tuple]:
             row["city"],
             row["merchant_category"],
             row["risk_score"],
+            # Dodane z wersji 3.0 ML: pobieramy bezpiecznie przez .get()
+            row.get("risk_score_rules"),
+            row.get("risk_score_ml"),
             row["risk_level"],
-            row["risk_flags"],
+            # NAPRAWA BŁĘDU: Owinięcie listy w adapter Json()
+            Json(row["risk_flags"]) if row.get("risk_flags") is not None else Json([]),
             row["recommended_action"],
         ))
     return prepared
@@ -122,6 +129,8 @@ def main():
                             city,
                             is_fraud,
                             risk_score,
+                            risk_score_rules,
+                            risk_score_ml,
                             risk_level,
                             requires_manual_review,
                             processor_version,
@@ -146,6 +155,8 @@ def main():
                             city,
                             merchant_category,
                             risk_score,
+                            risk_score_rules,
+                            risk_score_ml,
                             risk_level,
                             risk_flags,
                             recommended_action
