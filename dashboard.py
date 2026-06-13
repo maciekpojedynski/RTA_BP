@@ -44,7 +44,7 @@ def fetch_data():
             cur.execute("SELECT * FROM processed_transactions ORDER BY timestamp DESC LIMIT 500;")
             tx_data = cur.fetchall()
             
-            cur.execute("SELECT * FROM fraud_alerts ORDER BY timestamp DESC;")
+            cur.execute("SELECT * FROM fraud_alerts ORDER BY created_at DESC;")
             alerts_data = cur.fetchall()
             
             cur.execute("SELECT * FROM transaction_window_stats ORDER BY window_end DESC LIMIT 100;")
@@ -57,7 +57,6 @@ def fetch_data():
             
         except Exception as e:
             st.sidebar.error(f"Błąd połączenia z bazą: {e}. Fallback do JSON.")
-
             return load_from_json()
     else:
         return load_from_json()
@@ -104,10 +103,11 @@ with kpi4:
 
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Analiza Wolumenu i Ruchu", 
     "🚨 Centrum Zarządzania Alertami", 
-    "🧮 Agregacje Okienkowe"
+    "🧮 Agregacje Okienkowe",
+    "💰 Analiza ROI i Biznesu"
 ])
 
 with tab1:
@@ -119,9 +119,11 @@ with tab1:
         st.markdown("##### Kwoty transakcji w czasie")
         if not df_tx.empty and 'amount' in df_tx.columns:
             chart_df = df_tx.copy()
-            if 'timestamp' in chart_df.columns:
-                chart_df = chart_df.sort_values('timestamp')
-                st.line_chart(data=chart_df, x='timestamp', y='amount')
+            # Sprawdzenie poprawnej kolumny czasu
+            time_col = 'timestamp' if 'timestamp' in chart_df.columns else ('created_at' if 'created_at' in chart_df.columns else None)
+            if time_col:
+                chart_df = chart_df.sort_values(time_col)
+                st.line_chart(data=chart_df, x=time_col, y='amount')
             else:
                 st.line_chart(chart_df['amount'])
         else:
@@ -130,7 +132,7 @@ with tab1:
     with col_right:
         st.markdown("##### Podgląd strumienia wejściowego (Ostatnie rekordy)")
         if not df_tx.empty:
-            st.dataframe(df_tx.head(15), use_container_width=True)
+            st.dataframe(df_tx.head(15), width="stretch")
         else:
             st.warning("Oczekiwanie na pojawienie się danych transakcyjnych w systemie...")
 
@@ -143,14 +145,14 @@ with tab2:
         st.markdown("##### Rejestr zgłoszeń modeli ML i reguł bezpieczeństwa")
         st.dataframe(
             df_alerts, 
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "risk_score": st.column_config.ProgressColumn(
                     "Poziom Ryzyka",
-                    help="Wynik dopasowania anomalii przez algorytm ML",
+                    help="Wynik dopasowania anomalii przez algorytm ML + Reguły",
                     format="%.2f",
                     min_value=0.0,
-                    max_value=1.0,
+                    max_value=100.0,
                 )
             }
         )
@@ -162,10 +164,66 @@ with tab3:
     st.markdown("Dane dostarczane przez warstwę Stream Processing (Osoba 3) opisujące zachowanie systemu w ujęciu interwałowym.")
     
     if not df_stats.empty:
-        st.dataframe(df_stats, use_container_width=True)
+        st.dataframe(df_stats, width="stretch")
         
-        if 'tx_count' in df_stats.columns:
+        # Dostosowanie do poprawnej nazwy kolumny w stream processorze ('transaction_count')
+        count_col = 'transaction_count' if 'transaction_count' in df_stats.columns else ('tx_count' if 'tx_count' in df_stats.columns else None)
+        if count_col:
             st.markdown("##### Liczba transakcji w poszczególnych oknach systemowych")
-            st.bar_chart(data=df_stats, y='tx_count')
+            st.bar_chart(data=df_stats, y=count_col)
     else:
         st.info("Brak przetworzonych agregacji okienkowych w bazie danych. System oczekuje na start silnika streamingu.")
+
+with tab4:
+    st.subheader("💰 Wpływ wdrożenia systemu na wynik finansowy (ROI)")
+    st.markdown("Analiza korzyści majątkowych wynikających z automatycznego blokowania oszustw kartowych oraz kosztów utrzymania operacyjnego zespołu review.")
+
+    if not df_alerts.empty:
+        # Konwersja kwot na wartości numeryczne
+        df_alerts['amount'] = df_alerts['amount'].astype(float)
+        
+        # 1. Obliczanie metryk
+        # Uratowana gotówka: transakcje zablokowane automatycznie (status critical)
+        uratowany_kapital = df_alerts[df_alerts['risk_level'] == 'critical']['amount'].sum()
+        
+        # Koszt weryfikacji manualnej: np. obsługa każdego alertu "high" przez analityka to koszt 5 PLN
+        liczba_high_alerts = len(df_alerts[df_alerts['risk_level'] == 'high'])
+        koszt_operacyjny = liczba_high_alerts * 5.0
+        
+        # Oszczędność czysta dla biznesu
+        oszczednosci_netto = uratowany_kapital - koszt_operacyjny
+
+        # Wyświetlenie kart finansowych
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric(label="💵 Uratowany Kapitał (Zablokowany Fraud)", value=f"{uratowany_kapital:,.2f} PLN")
+        with m2:
+            st.metric(label="📉 Koszty Operacyjne (Manual Review)", value=f"{koszt_operacyjny:,.2f} PLN", delta_color="inverse")
+        with m3:
+            st.metric(label="🚀 Czyste Oszczędności Systemu (Net Profit)", value=f"{oszczednosci_netto:,.2f} PLN")
+
+        st.markdown("---")
+        st.markdown("##### 📈 Kumulacja oszczędności finansowych w czasie")
+        
+        # Przygotowanie danych do wykresu liniowego skumulowanego profitu
+        # Sortujemy chronologicznie według daty utworzenia alertu
+        time_alert_col = 'created_at' if 'created_at' in df_alerts.columns else ('timestamp' if 'timestamp' in df_alerts.columns else None)
+        
+        if time_alert_col:
+            df_chart_money = df_alerts.copy()
+            df_chart_money = df_chart_money.sort_values(time_alert_col)
+            
+            # Dodajemy kolumnę, która ma wartość transakcji tylko jeśli to był zablokowany critical fraud, a dla high (manual review) odejmuje 5 PLN kosztu
+            df_chart_money['financial_impact'] = df_chart_money.apply(
+                lambda r: r['amount'] if r['risk_level'] == 'critical' else (-5.0 if r['risk_level'] == 'high' else 0.0),
+                axis=1
+            )
+            # Liczymy sumę skumulowaną (cumsum)
+            df_chart_money['Zaoszczędzone Pieniądze (Suma skumulowana)'] = df_chart_money['financial_impact'].cumsum()
+            
+            # Rysowanie wykresu liniowego ROI
+            st.line_chart(data=df_chart_money, x=time_alert_col, y='Zaoszczędzone Pieniądze (Suma skumulowana)')
+        else:
+            st.info("Brak znacznika czasu w alertach, aby wygenerować wykres skumulowany.")
+    else:
+        st.info("Brak zarejestrowanych alertów w systemie. Wartość uratowanego kapitału wynosi obecnie 0.00 PLN.")
